@@ -1,0 +1,43 @@
+# lex-economy task spec — LEX_TASK_SPEC=tasks/settlement.task
+#
+# The orchestration module: composes request_bid (a WorkRequest's awarded
+# Bid) + treasury (fund reservation/payout) + contract (lifecycle state
+# machine) into the two moments money and contract state actually change
+# together -- opening a contract from an award, and settling a verified
+# contract. Nothing new is invented here; every invariant this module
+# enforces is just "call the already-shipped module that owns that
+# invariant, in the right order, and propagate its Err untouched."
+#
+# lex-soft's real settlement.lex (record_chargeback/record_run, tied to its
+# own lex-trail log) is NOT used here, deliberately, same reasoning treasury
+# already applied to lex-guard: it is a real, different primitive for
+# recording money movement against lex-soft's own agent/org model, not a
+# drop-in for this repo's WorkRequest/Bid/Contract/Treasury shapes.
+# Reconciling the two is separate future work.
+#
+# KNOWN CONSTRUCTOR-NAMESPACE HAZARD (see reference_lex_flat_constructor_
+# namespace memory / the request_bid task's own header for the full story):
+# this file imports BOTH contract.lex (ContractState has bare constructors
+# Awarded, InProgress, Delivered, Verified, Settled, Disputed, Cancelled)
+# AND treasury.lex (CommitmentState has bare constructors Reserved,
+# Released, Settled). `Settled` is defined in BOTH and WILL collide if this
+# file ever constructs or pattern-matches a bare `Settled` literal -- Lex's
+# ADT constructors share one flat namespace across every imported module,
+# not one scoped per type. AVOID this entirely: this task's functions never
+# need to construct or inspect a treasury.Commitment's raw CommitmentState
+# directly -- they only ever call treasury's own validating functions
+# (commit_funds/settle_commitment/release_commitment) and propagate the Str
+# error those already return. Do not add a defensive read of a Commitment's
+# `.state` field anywhere in this file; if a check on commitment state is
+# ever needed, treasury's own functions already perform it and return the
+# right Err. request_bid.lex's own RequestState/BidState constructors are
+# already prefixed (ReqOpen/BidSubmitted/...) so they carry no collision
+# risk against contract.lex's bare ContractState/Verdict constructors.
+
+goal = "Create src/settlement.lex. Import \"./contract\" as contract, \"./treasury\" as treasury, \"./request_bid\" as request_bid, and \"lex-trail/log\" as tlog. Implement two functions. fn open_contract(db :: Db, log :: tlog.Log, request :: request_bid.WorkRequest, bid :: request_bid.Bid, contract_id :: Str, commitment_id :: Str) -> [sql, time] Result[contract.Contract, Str] -- turns an awarded bid into a live contract with funds reserved. MUST fail: Err(\"bid_not_accepted\") if bid.state is not request_bid.BidAccepted; Err(\"bid_request_mismatch\") if bid.request_id != request.id. Otherwise calls treasury.commit_funds(db, log, request.buyer, request.id, commitment_id, bid.price.cents, bid.price.currency) to reserve the bid's price against the buyer's treasury, propagating ANY Err it returns completely unchanged (do not wrap, rename, or reinterpret treasury's own error strings -- request_not_open/no_such_treasury/currency_mismatch/insufficient_funds/invalid_amount are ALL treasury's vocabulary, not this module's). On a successful reservation, returns Ok of a new contract.Contract with that contract_id, buyer: request.buyer, supplier: bid.supplier, price: bid.price, and state: contract's own Awarded constructor (the contract lifecycle always starts there, per contract.lex's own transition table). fn settle_contract(db :: Db, log :: tlog.Log, c :: contract.Contract, commitment_id :: Str, paid_cents :: Int) -> [sql, time] Result[contract.Contract, Str] -- resolves a verified contract's money and lifecycle state together. MUST fail Err(\"not_verified\") unless c.state is contract's Verified(verdict) constructor (every other ContractState, including the terminal ones, is rejected -- this function is the ONLY path from Verified to a terminal state in this module). Then dispatch on the wrapped verdict: for contract.Fulfilled or contract.PartiallyFulfilled(_), call treasury.settle_commitment(db, log, commitment_id, paid_cents) (propagate its Err unchanged on failure, no contract or trail change), and on success call contract.transition(c, c's own WasSettled constructor) (this MUST succeed given c.state was already Verified(_) -- if it somehow doesn't, propagate that Err instead of panicking) and then tlog.append(log, \"contract_settled\", None, a JSON payload of exactly {\"company\": c.supplier}), returning Ok of the transitioned contract. For contract.Rejected(_), MUST fail Err(\"rejected_verdict_cannot_pay\") if paid_cents != 0 (a rejected verdict can never pay out anything); otherwise call treasury.release_commitment(db, log, commitment_id) (propagate its Err unchanged on failure), then contract.transition(c, c's own WasDisputed constructor) (Verified(_) + WasDisputed -> Disputed per contract.lex's own table -- a rejected delivery becomes a dispute, not a silent settlement), then tlog.append(log, \"contract_failed\", None, a JSON payload of exactly {\"company\": c.supplier}), returning Ok of the transitioned (now Disputed) contract. For contract.Ambiguous(_), MUST fail Err(\"ambiguous_verdict_needs_arbitration\") and make ZERO calls to treasury or tlog -- an ambiguous verdict is not this module's to resolve automatically (who arbitrates it is an explicit open question this whole design left for later; refusing outright is the correct, safe behavior, not a placeholder). Every failure path (both functions) must leave the database completely unchanged -- validate before mutating, exactly like treasury's own functions already do internally. Write examples {} blocks ONLY for pure sub-logic if any exists as a separable pure helper (e.g. a verdict-to-Err-reason mapping); open_contract and settle_contract themselves are effectful ([sql, time]) and cannot carry examples -- cover them instead with a real tests/test_settlement.lex exercising an in-memory SQLite db (same pattern as tests/test_treasury.lex: lex-trail/log's open_memory + treasury.init_schema + treasury.open_treasury to set up fixtures) covering: open_contract success (commitment reserved, contract Awarded), open_contract on a non-accepted bid, open_contract with a mismatched request_id, open_contract when treasury rejects the reservation (e.g. insufficient funds) and confirms NO contract is treated as opened; settle_contract with a Fulfilled verdict (full payout, contract reaches Settled, a contract_settled event recorded), settle_contract with a PartiallyFulfilled verdict paying less than the full price, settle_contract with a Rejected verdict (paid_cents must be 0, commitment released not paid, contract reaches Disputed, a contract_failed event recorded), settle_contract with a Rejected verdict and a nonzero paid_cents (must fail, no state change), settle_contract with an Ambiguous verdict (must fail, confirms the treasury balance/committed and contract state are BOTH completely untouched), and settle_contract on a contract that is not in a Verified state (e.g. still Awarded)."
+
+check       = ["src/settlement.lex"]
+spec_check  = []
+test        = []
+verified    = ["verified.type_check", "verified.test"]
+verified_on = ["src/settlement.lex:verified.type_check"]
