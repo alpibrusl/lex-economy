@@ -1,0 +1,8 @@
+[package]
+name        = "lex-economy"
+version     = "0.1.0"
+lex         = "0.10.18"
+description = "Contracts, treasury, and reputation for a Lex agent economy."
+license     = "EUPL-1.2"
+
+[dependencies]
