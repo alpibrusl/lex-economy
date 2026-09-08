@@ -1,0 +1,29 @@
+# lex-economy task spec — LEX_TASK_SPEC=tasks/evidence.task
+#
+# lex-soft's real verdict.lex solves a DIFFERENT problem than what
+# contract.lex's Verdict type needs: it re-derives whether a settlement
+# TRAIL is cryptographically intact/linked and satisfies a formal lex-spec
+# precondition ({ intact, linked, legal, verified, spec_applied, score,
+# reason }) -- a tamper-evidence question. contract.lex's own Verdict
+# (Fulfilled | PartiallyFulfilled(List[Str]) | Rejected(List[Str]) |
+# Ambiguous(List[Str]), already shipped and already load-bearing for
+# settlement.lex) answers a different, commercial question: did the
+# delivered work satisfy the BUYER's criteria. Reconciling the two is not
+# attempted -- contract.lex's Verdict is the one this repo has already
+# committed to, and lex-soft's verdict.lex additionally pulls in lex-spec,
+# lex-games, and lex-web (a much heavier and less relevant dependency
+# footprint than even lex-soft/matchmaking's, which capability.task already
+# declined for a lighter reason).
+#
+# This task builds the actual missing piece: something that PRODUCES a
+# contract.Verdict from a WorkRequest's Criteria (request_bid.lex) plus
+# per-criterion evidence. Nothing currently does this anywhere in the repo
+# -- contract.lex's own tests only ever construct a Verdict by hand.
+
+goal = "Create src/evidence.lex. Import \"./contract\" as contract and \"./request_bid\" as request_bid. Define: type EvidenceItem = { attr :: Str, satisfied :: Bool, note :: Str } -- a claim about ONE named criterion (attr matches a request_bid.Criterion's own attr field): satisfied is whether the submitted evidence shows that criterion was met, note is a short human-readable justification. Implement fn find_evidence(evidence :: List[EvidenceItem], attr :: Str) -> Option[EvidenceItem] -- the first item in evidence whose attr matches, or None if no item addresses that attr at all (a criterion nobody assessed, as opposed to one explicitly assessed and found unmet -- these are different states this module MUST distinguish). fn evaluate(criteria :: List[request_bid.Criterion], evidence :: List[EvidenceItem]) -> contract.Verdict -- the core function. For EACH criterion in `criteria`, classify it into exactly one of three states by calling find_evidence(evidence, criterion.attr): UNASSESSED (find_evidence returns None -- nobody submitted evidence addressing this criterion at all), MET (find_evidence returns Some(item) with item.satisfied == true), or UNMET (find_evidence returns Some(item) with item.satisfied == false). Then decide the overall contract.Verdict by these exact rules, in this exact priority: (1) if `criteria` is empty, return contract's own Fulfilled constructor (vacuously satisfied -- nothing was required); (2) otherwise, if ANY criterion is UNASSESSED, return contract's own Ambiguous constructor applied to the list of every UNASSESSED criterion's attr, in the same order they appear in `criteria` (an unassessed criterion means nobody has rendered a judgment yet -- this case needs human arbitration, not an automatic guess, and MUST take priority over every other rule below even if some criteria are also UNMET); (3) otherwise (every criterion is either MET or UNMET, none UNASSESSED), if EVERY criterion is MET, return contract's own Fulfilled constructor; (4) otherwise, if EVERY criterion is UNMET (none MET), return contract's own Rejected constructor applied to the list of every UNMET criterion's attr (which, in this branch, is every criterion's attr) in their original order; (5) otherwise (a genuine mix of MET and UNMET, none UNASSESSED), return contract's own PartiallyFulfilled constructor applied to the list of just the UNMET criteria's attrs, in their original order. Write an examples {} block on evaluate covering all five numbered branches above by name (empty criteria; all unassessed -- Ambiguous listing every attr; a mix of unassessed AND unmet -- Ambiguous still wins per rule (2)'s priority over rule (4); all met -- Fulfilled; all unmet, none unassessed -- Rejected listing every attr; a genuine met/unmet mix, none unassessed -- PartiallyFulfilled listing only the unmet attrs, in original order, not sorted). Also write an examples {} block on find_evidence covering: found, not found (empty list), and not found (nonempty list, no matching attr). Both functions are pure -- no effects, no storage."
+
+check       = ["src/evidence.lex"]
+spec_check  = []
+test        = []
+verified    = ["verified.type_check"]
+verified_on = ["src/evidence.lex:verified.type_check"]
