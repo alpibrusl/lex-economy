@@ -12,7 +12,7 @@ import "lex-trail/log" as tlog
 
 type Treasury = { company :: Str, currency :: Str, balance_cents :: Int, committed_cents :: Int }
 
-type CommitmentState = Reserved | Released | Settled
+type CommitmentState = CommitReserved | CommitReleased | CommitSettled
 
 type Commitment = { id :: Str, company :: Str, contract_id :: Str, amount_cents :: Int, currency :: Str, state :: CommitmentState }
 
@@ -28,21 +28,21 @@ fn available_cents(t :: Treasury) -> Int
 
 fn state_to_str(s :: CommitmentState) -> Str {
   match s {
-    Reserved => "reserved",
-    Released => "released",
-    Settled => "settled",
+    CommitReserved => "reserved",
+    CommitReleased => "released",
+    CommitSettled => "settled",
   }
 }
 
 fn str_to_state(s :: Str) -> Option[CommitmentState] {
   if s == "reserved" {
-    Some(Reserved)
+    Some(CommitReserved)
   } else {
     if s == "released" {
-      Some(Released)
+      Some(CommitReleased)
     } else {
       if s == "settled" {
-        Some(Settled)
+        Some(CommitSettled)
       } else {
         None
       }
@@ -127,12 +127,12 @@ fn commit_funds(db :: Db, log :: tlog.Log, company :: Str, contract_id :: Str, c
             Err("insufficient_funds")
           } else {
             let new_committed := t.committed_cents + amount_cents
-            let commitment := { id: commitment_id, company: company, contract_id: contract_id, amount_cents: amount_cents, currency: currency, state: Reserved }
+            let commitment := { id: commitment_id, company: company, contract_id: contract_id, amount_cents: amount_cents, currency: currency, state: CommitReserved }
             let payload := str.join(["{", json.stringify("company"), ":", json.stringify(company), ",", json.stringify("contract_id"), ":", json.stringify(contract_id), ",", json.stringify("commitment_id"), ":", json.stringify(commitment_id), ",", json.stringify("amount_cents"), ":", int.to_str(amount_cents), ",", json.stringify("currency"), ":", json.stringify(currency), "}"], "")
             in_transaction(db, fn (tx :: Db) -> [sql, time] Result[Commitment, Str] {
               match sql.exec(tx, "UPDATE treasuries SET committed_cents = ? WHERE company = ?", [PInt(new_committed), PStr(company)]) {
                 Err(e) => Err(e.message),
-                Ok(_) => match sql.exec(tx, "INSERT INTO commitments (id, company, contract_id, amount_cents, currency, state) VALUES (?, ?, ?, ?, ?, ?)", [PStr(commitment_id), PStr(company), PStr(contract_id), PInt(amount_cents), PStr(currency), PStr(state_to_str(Reserved))]) {
+                Ok(_) => match sql.exec(tx, "INSERT INTO commitments (id, company, contract_id, amount_cents, currency, state) VALUES (?, ?, ?, ?, ?, ?)", [PStr(commitment_id), PStr(company), PStr(contract_id), PInt(amount_cents), PStr(currency), PStr(state_to_str(CommitReserved))]) {
                   Err(e2) => Err(e2.message),
                   Ok(_) => match tlog.append(log, "treasury.committed", None, payload) {
                     Err(e3) => Err(e3),
@@ -154,9 +154,9 @@ fn release_commitment(db :: Db, log :: tlog.Log, commitment_id :: Str) -> [sql, 
     Ok(None) => Err("no_such_commitment"),
     Ok(Some(c)) => {
       match c.state {
-        Released => Err("not_reserved"),
-        Settled => Err("not_reserved"),
-        Reserved => {
+        CommitReleased => Err("not_reserved"),
+        CommitSettled => Err("not_reserved"),
+        CommitReserved => {
           match get_treasury(db, c.company) {
             Err(e) => Err(e),
             Ok(None) => Err("no_such_treasury"),
@@ -166,7 +166,7 @@ fn release_commitment(db :: Db, log :: tlog.Log, commitment_id :: Str) -> [sql, 
               in_transaction(db, fn (tx :: Db) -> [sql, time] Result[Unit, Str] {
                 match sql.exec(tx, "UPDATE treasuries SET committed_cents = ? WHERE company = ?", [PInt(new_committed), PStr(c.company)]) {
                   Err(e) => Err(e.message),
-                  Ok(_) => match sql.exec(tx, "UPDATE commitments SET state = ? WHERE id = ?", [PStr(state_to_str(Released)), PStr(commitment_id)]) {
+                  Ok(_) => match sql.exec(tx, "UPDATE commitments SET state = ? WHERE id = ?", [PStr(state_to_str(CommitReleased)), PStr(commitment_id)]) {
                     Err(e2) => Err(e2.message),
                     Ok(_) => match tlog.append(log, "treasury.released", None, payload) {
                       Err(e3) => Err(e3),
@@ -192,9 +192,9 @@ fn settle_commitment(db :: Db, log :: tlog.Log, commitment_id :: Str, paid_cents
       Ok(None) => Err("no_such_commitment"),
       Ok(Some(c)) => {
         match c.state {
-          Released => Err("not_reserved"),
-          Settled => Err("not_reserved"),
-          Reserved => {
+          CommitReleased => Err("not_reserved"),
+          CommitSettled => Err("not_reserved"),
+          CommitReserved => {
             if paid_cents > c.amount_cents {
               Err("overpay")
             } else {
@@ -208,7 +208,7 @@ fn settle_commitment(db :: Db, log :: tlog.Log, commitment_id :: Str, paid_cents
                   in_transaction(db, fn (tx :: Db) -> [sql, time] Result[Unit, Str] {
                     match sql.exec(tx, "UPDATE treasuries SET balance_cents = ?, committed_cents = ? WHERE company = ?", [PInt(new_balance), PInt(new_committed), PStr(c.company)]) {
                       Err(e) => Err(e.message),
-                      Ok(_) => match sql.exec(tx, "UPDATE commitments SET state = ? WHERE id = ?", [PStr(state_to_str(Settled)), PStr(commitment_id)]) {
+                      Ok(_) => match sql.exec(tx, "UPDATE commitments SET state = ? WHERE id = ?", [PStr(state_to_str(CommitSettled)), PStr(commitment_id)]) {
                         Err(e2) => Err(e2.message),
                         Ok(_) => match tlog.append(log, "treasury.settled", None, payload) {
                           Err(e3) => Err(e3),

@@ -63,7 +63,7 @@ fn test_commit_release(db :: Db, log :: tlog.Log) -> [sql, time] Result[Unit, St
     Err(e) => Err(e),
     Ok(_) => match tr.commit_funds(db, log, "ReleaseCo", "c-r1", "cm-r1", 200, "USD") {
       Err(e) => Err(e),
-      Ok(c) => if c.state != tr.Reserved {
+      Ok(c) => if c.state != tr.CommitReserved {
         Err("cm-r1 not Reserved")
       } else {
         match tr.get_treasury(db, "ReleaseCo") {
@@ -83,7 +83,7 @@ fn test_commit_release(db :: Db, log :: tlog.Log) -> [sql, time] Result[Unit, St
                     Ok(_) => match tr.get_commitment(db, "cm-r1") {
                       Err(e) => Err(e),
                       Ok(None) => Err("commitment missing after release"),
-                      Ok(Some(c2)) => if c2.state != tr.Released {
+                      Ok(Some(c2)) => if c2.state != tr.CommitReleased {
                         Err("cm-r1 not Released")
                       } else {
                         match tr.release_commitment(db, log, "cm-r1") {
@@ -135,7 +135,7 @@ fn test_settle_partial_and_overpay(db :: Db, log :: tlog.Log) -> [sql, time] Res
               Ok(_) => match tr.get_commitment(db, "cm-s1") {
                 Err(e) => Err(e),
                 Ok(None) => Err("commitment missing"),
-                Ok(Some(c)) => if c.state != tr.Settled {
+                Ok(Some(c)) => if c.state != tr.CommitSettled {
                   Err("cm-s1 not Settled")
                 } else {
                   match tr.open_treasury(db, "OverpayCo", "USD", 1000) {
@@ -154,7 +154,7 @@ fn test_settle_partial_and_overpay(db :: Db, log :: tlog.Log) -> [sql, time] Res
                               Ok(_) => match tr.get_commitment(db, "cm-s2") {
                                 Err(e) => Err(e),
                                 Ok(None) => Err("commitment missing"),
-                                Ok(Some(c2)) => if c2.state != tr.Reserved {
+                                Ok(Some(c2)) => if c2.state != tr.CommitReserved {
                                   Err("cm-s2 changed state on overpay fail")
                                 } else {
                                   match tr.settle_commitment(db, log, "cm-s2", -1) {
