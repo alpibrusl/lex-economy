@@ -1,0 +1,28 @@
+# lex-economy task spec — LEX_TASK_SPEC=tasks/request_bid.task
+#
+# Fills the exact gap contract.lex's own task file flagged: "dropped
+# Criterion (belongs to request/bid, doesn't exist yet) and the
+# budget_ceiling invariant (needs WorkRequest)". This module defines both,
+# and reuses contract.lex's existing Money type (imported, not redefined —
+# contract.lex is already the shared home for money-shaped types in this
+# repo). Criterion here is carried as opaque data only — nothing in this
+# module evaluates whether a criterion is met; that is evidence/verdict's
+# job once it exists, not yet built.
+#
+# `capability`/`evidence`/`settlement` (the other remaining modules from the
+# original design doc) each have a real, already-shipped lex-soft/lex-spec
+# equivalent whose shape differs from the doc's sketch (lex-soft/matchmaking
+# for capability matching, lex-soft/verdict for evidence — a much richer
+# { intact, linked, legal, verified, spec_applied, score, reason } shape
+# than anything reconciled here) — reconciling those is separate groundwork,
+# not done as part of this task. request/bid has no such conflict: nothing
+# in lex-soft models a request/bid marketplace, so this is a clean, fully
+# self-contained module.
+
+goal = "Create src/request_bid.lex. Import \"./contract\" as contract and reuse contract.Money (do not redefine a local Money type). Define: type Criterion = { attr :: Str, description :: Str } (opaque — nothing in this module evaluates it). type RequestState = Open | Awarded | Cancelled | Expired. type WorkRequest = { id :: Str, buyer :: Str, capability :: Str, description :: Str, budget_ceiling :: contract.Money, criteria :: List[Criterion], deadline_ms :: Int, state :: RequestState }. type BidState = Submitted | Withdrawn | Accepted | Rejected. type Bid = { id :: Str, request_id :: Str, supplier :: Str, price :: contract.Money, message :: Str, state :: BidState }. Implement: fn post_request(id :: Str, buyer :: Str, capability :: Str, description :: Str, budget_ceiling :: contract.Money, criteria :: List[Criterion], deadline_ms :: Int) -> WorkRequest — pure constructor, state starts Open. fn submit_bid(request :: WorkRequest, bid_id :: Str, supplier :: Str, price :: contract.Money, message :: Str, now_ms :: Int) -> Result[Bid, Str] — MUST reject (Err, no Bid produced) when: request.state is not Open (Err(\"request_not_open\")); now_ms > request.deadline_ms (Err(\"deadline_passed\")); price.currency != budget_ceiling.currency (Err(\"currency_mismatch\")); price.cents > budget_ceiling.cents (Err(\"over_budget\") -- THE core invariant this module exists to enforce: no successfully-submitted Bid may ever exceed its WorkRequest's budget_ceiling, checked as an equal-currency integer-cents comparison, never a float). On success returns a Bid in Submitted state referencing request.id. fn withdraw_bid(bid :: Bid) -> Result[Bid, Str] — only valid from Submitted state (Err(\"not_submitted\") otherwise, including double-withdrawal); returns the bid with state Withdrawn. fn award(request :: WorkRequest, bids :: List[Bid], winning_bid_id :: Str) -> Result[(WorkRequest, List[Bid]), Str] — MUST fail Err(\"request_not_open\") if request.state is not Open; Err(\"invalid_bid\") if no bid in `bids` has id == winning_bid_id AND state == Submitted; Err(\"bid_request_mismatch\") if that bid's request_id != request.id. On success: returns the request with state Awarded, and the FULL bids list with the winning bid set to Accepted and every OTHER Submitted bid for the same request_id set to Rejected (bids for a different request_id, or already Withdrawn, are left untouched — award only resolves competing live bids on the same request). fn cancel_request(request :: WorkRequest) -> Result[WorkRequest, Str] — valid only from Open (Err(\"request_not_open\") otherwise, including cancelling an already-Awarded or already-Cancelled request); returns the request with state Cancelled. fn is_terminal(request :: WorkRequest) -> Bool — true exactly for Awarded, Cancelled, Expired; false for Open. Write examples {} blocks on every pure function (all of the above are pure — no effects, no storage) covering: post_request's initial state; submit_bid's every rejection reason plus one success; withdraw_bid success and double-withdrawal rejection; award's success (winner Accepted, a competing bid on the SAME request Rejected, a bid on a DIFFERENT request_id left Submitted, a Withdrawn bid left Withdrawn), award on a non-Open request, award with an unknown/mismatched winning_bid_id; cancel_request success and rejection from a non-Open state; is_terminal true/false for every state variant."
+
+check       = ["src/request_bid.lex"]
+spec_check  = []
+test        = []
+verified    = ["verified.type_check"]
+verified_on = ["src/request_bid.lex:verified.type_check"]
