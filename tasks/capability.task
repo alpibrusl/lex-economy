@@ -1,0 +1,38 @@
+# lex-economy task spec — LEX_TASK_SPEC=tasks/capability.task
+#
+# lex-soft already has a real, complete, PURE capability-matching engine
+# (lex-soft/src/matchmaking.lex): typed Offer/Query/Constraint/Match, exact
+# capability-id match plus attribute constraints (eq/ne/lte/gte/lt/gt),
+# ranked by specificity. This task deliberately does NOT import it, and
+# that is a considered trade-off, not laziness -- confirmed empirically:
+# `lex pkg install` against a lex.toml depending on lex-soft resolves its
+# FULL declared transitive closure unconditionally (Lex has no sparse/
+# partial dependency resolution), pulling in 23 packages (lex-llm,
+# lex-agent, lex-cli, lex-jobs, lex-x402, lex-guard, lex-games, lex-fix,
+# lex-positions, lex-web, lex-money, ...) into lex-economy's build just to
+# reach ~200 lines of pure matching logic. That is a disproportionate
+# dependency-hygiene cost for what has been, until now, a lean 2-dependency
+# repo (lex-schema, lex-trail).
+#
+# So this task defines a SCOPED-DOWN, SELF-CONTAINED capability module,
+# deliberately mirroring lex-soft/matchmaking.lex's type shapes (Constraint/
+# Query/Offer/Match, same field names, same operator vocabulary) rather
+# than inventing a different design -- if lex-soft's matchmaking logic is
+# ever extracted into its own lean package with a small dependency
+# footprint, migrating this module to import it becomes a near-trivial
+# rename, not a redesign. Dropped from the mirrored design: lex-soft's
+# legacy flat-string offer parsing and its HTTP request/response JSON
+# marshaling (parse_query/match_to_json) -- lex-economy has no HTTP layer
+# and no legacy format to stay compatible with.
+#
+# `lex-schema/json_value` is already a direct dependency of this repo
+# (reputation.lex uses it), so using jv.Json for offer attrs costs nothing
+# new.
+
+goal = "Create src/capability.lex. Import \"lex-schema/json_value\" as jv, \"std.list\" as list, \"std.int\" as int. Define: type Constraint = { attr :: Str, op :: Str, value :: jv.Json } (op is one of \"eq\", \"ne\", \"lte\", \"gte\", \"lt\", \"gt\"). type Query = { capability :: Str, constraints :: List[Constraint] }. type Offer = { capability :: Str, attrs :: jv.Json }. type Match = { company :: Str, capability :: Str, score :: Int }. type CompanyOffers = { company :: Str, offers :: List[Offer] }. Implement: fn exact_query(capability :: Str) -> Query -- a query with no constraints, matching purely on capability id (pure, add an examples {} block). fn eval_constraint(attrs :: jv.Json, c :: Constraint) -> Bool -- looks up c.attr in attrs (a JObj -- use jv.get_field); if the field is missing, the constraint is NOT satisfied (false), never an error. \"eq\" and \"ne\" compare the field's JSON value against c.value for equality (JStr against JStr by string equality, JBool against JBool by bool equality, JInt/JFloat against JInt/JFloat by NUMERIC equality treating JInt and JFloat as comparable -- e.g. JInt(5) must equal JFloat(5.0) -- comparing any other combination of JSON value kinds, e.g. a JStr against a JInt, is never equal). \"lte\"/\"gte\"/\"lt\"/\"gt\" require BOTH the field's value and c.value to be numeric (JInt or JFloat, coerced to Float for the comparison); if either side is not numeric, the constraint is NOT satisfied. Any other op string is NOT satisfied (false), not an error. Add an examples {} block covering: eq true/false, ne true/false, a numeric comparison true and false case, JInt-vs-JFloat numeric equality, a missing attribute, and an unknown op string. fn offer_satisfies(o :: Offer, q :: Query) -> Bool -- true iff o.capability == q.capability AND every constraint in q.constraints is satisfied by o.attrs (an empty constraints list is trivially satisfied once the capability id matches). Add an examples {} block covering: matching capability with no constraints, matching capability with all constraints satisfied, matching capability with one constraint failing, and a non-matching capability id (constraints irrelevant, must be false regardless of what they say). fn attr_count(attrs :: jv.Json) -> Int -- the number of fields in attrs if it is a JObj, 0 for any other JSON shape (this is the offer's specificity score -- a richer offer with more attributes ranks higher). Add an examples {} block. fn best_score(offers :: List[Offer], q :: Query) -> Option[Int] -- among the offers in the list that satisfy q, the HIGHEST attr_count found; None if no offer in the list satisfies q (an empty offers list also yields None). fn find(entries :: List[CompanyOffers], q :: Query) -> List[Match] -- for every company whose offers include at least one satisfying q, produce a Match { company, capability: q.capability, score: <that company's best_score> }; a company with no satisfying offer contributes nothing. The result MUST be sorted by score DESCENDING (ties may be in any order relative to each other, but every higher-score Match must come before every lower-score one). Write an examples {} block on find covering: multiple companies with different scores producing a descending-sorted result, a company with no matching offer excluded entirely, and an empty entries list producing []. Every function in this file is pure -- no effects, no storage, no imports of ./contract, ./treasury, ./request_bid, or ./settlement (this module is a leaf; other modules may compose it later, it composes nothing itself)."
+
+check       = ["src/capability.lex"]
+spec_check  = []
+test        = []
+verified    = ["verified.type_check"]
+verified_on = ["src/capability.lex:verified.type_check"]
