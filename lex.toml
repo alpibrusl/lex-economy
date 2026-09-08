@@ -6,3 +6,5 @@ description = "Contracts, treasury, and reputation for a Lex agent economy."
 license     = "EUPL-1.2"
 
 [dependencies]
+lex-schema = { git = "https://github.com/alpibrusl/lex-schema" }
+lex-trail = { git = "https://github.com/alpibrusl/lex-trail" }
