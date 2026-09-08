@@ -1,0 +1,46 @@
+# lex-economy task spec — LEX_TASK_SPEC=tasks/treasury.task
+#
+# Groundwork verified before writing this (do not trust the design doc's API
+# sketch blindly — it named lex-guard's models.Policy/SpendIntent as the
+# gating layer, and that shape does not fit here):
+#
+#   - lex-orm/std.sql (verified against ~/.lex/packages/lex-orm/src/connection.lex
+#     and crates/lex-types/src/builtins.rs): sql.exec(db :: Db, sql :: Str,
+#     params :: List[SqlParam]) -> [sql] Result[Int, SqlError]; sql.query[T](db,
+#     sql, params) -> [sql] Result[List[T], SqlError] decodes rows straight into
+#     a record type T by column name (see lex-soft/src/audit.lex's query_events:
+#     "SELECT id, kind, ... AS parent, ..." decoded into type EvRow, no manual
+#     get_str/get_int needed when the SELECT's column names match the record's
+#     fields). SqlParam has PStr(Str)/PInt(Int) constructors (see
+#     lex-soft/src/ctl.lex, device_http.lex). DDL is just sql.exec with "CREATE
+#     TABLE IF NOT EXISTS ..." (see lex-soft/src/ctl.lex's ddl()).
+#   - lex-trail/log (verified against lex-trail/src/log.lex): type Log = { db ::
+#     conn.ConnDb }; fn append(log :: Log, kind :: Str, parent :: Option[Str],
+#     payload_json :: Str) -> [sql, time] Result[ev.Event, Str]. The established
+#     idiom (lex-soft/src/ctl.lex's judge_and_record/verify_pass) is a function
+#     taking BOTH db :: Db (for its own sql.exec/query calls) AND log :: tlog.Log
+#     (separately, only for tlog.append) as two distinct parameters — Log is not
+#     unwrapped to get a Db, and Db is not derived from Log.
+#   - lex-guard's models.Policy/SpendIntent (verified against
+#     ~/.lex/packages/lex-guard/src/models.lex) is card-spend-shaped (merchant,
+#     category, token_id) — built for gating a single agent's card swipe, not a
+#     company-to-company contract commitment. It does not map cleanly onto this
+#     module's domain. DEFERRED for a v1: this task builds the treasury's own
+#     storage/balance invariants only (the actual point of the design doc's
+#     "explicit numerical invariants" pitch for this module) and does NOT call
+#     lex-guard at all. Wiring a real Policy/SpendIntent mapping is separate,
+#     later work once that mapping is actually designed.
+#
+# Scoped down from the design doc's fuller treasury sketch: no multi-currency
+# per company (one currency, fixed at open_treasury time; a currency mismatch
+# on commit_funds is a hard Err, not a conversion), no interest/fees, no
+# transaction history beyond the commitments table itself (the trail already
+# carries the full event history via tlog.append).
+
+goal = "Create src/treasury.lex, a SQL-backed treasury/commitment ledger. Import \"std.sql\" as sql, \"lex-trail/log\" as tlog (Db and SqlParam/PStr/PInt are std.sql's global types, used unqualified). Define: type Treasury = { company :: Str, currency :: Str, balance_cents :: Int, committed_cents :: Int }. type CommitmentState = Reserved | Released | Settled. type Commitment = { id :: Str, company :: Str, contract_id :: Str, amount_cents :: Int, currency :: Str, state :: CommitmentState }. Implement: fn available_cents(t :: Treasury) -> Int (PURE: t.balance_cents - t.committed_cents; add an examples {} block). fn init_schema(db :: Db) -> [sql] Result[Unit, Str] — creates (IF NOT EXISTS) a `treasuries` table (company TEXT PRIMARY KEY, currency TEXT NOT NULL, balance_cents BIGINT NOT NULL, committed_cents BIGINT NOT NULL) and a `commitments` table (id TEXT PRIMARY KEY, company TEXT NOT NULL, contract_id TEXT NOT NULL, amount_cents BIGINT NOT NULL, currency TEXT NOT NULL, state TEXT NOT NULL). fn open_treasury(db :: Db, company :: Str, currency :: Str, opening_balance_cents :: Int) -> [sql] Result[Unit, Str] — inserts a new treasury row with committed_cents=0; idempotent (ON CONFLICT (company) DO NOTHING — opening an already-open treasury is a silent no-op, not an error). fn get_treasury(db :: Db, company :: Str) -> [sql] Result[Option[Treasury], Str] — None if no such company. fn get_commitment(db :: Db, commitment_id :: Str) -> [sql] Result[Option[Commitment], Str]. fn commit_funds(db :: Db, log :: tlog.Log, company :: Str, contract_id :: Str, commitment_id :: Str, amount_cents :: Int, currency :: Str) -> [sql, time] Result[Commitment, Str] — reserves funds against a contract commitment. MUST fail (Err, no partial state change) when: amount_cents <= 0 (Err(\"invalid_amount\")); no treasury exists for company (Err(\"no_such_treasury\")); currency does not equal the treasury's own currency (Err(\"currency_mismatch\")); available_cents(treasury) < amount_cents (Err(\"insufficient_funds\") -- THE core invariant: a company can never commit more than balance_cents - committed_cents, i.e. balance_cents - committed_cents must remain >= 0 after every successful operation in this whole module). On success: increments the treasury's committed_cents by amount_cents, inserts a new Commitment row in Reserved state with the given commitment_id, and calls tlog.append(log, \"treasury.committed\", None, payload_json) with a JSON payload containing company, contract_id, commitment_id, amount_cents, currency -- then returns the new Commitment. fn release_commitment(db :: Db, log :: tlog.Log, commitment_id :: Str) -> [sql, time] Result[Unit, Str] — releases a reservation without paying it out (e.g. a cancelled contract). Fails Err(\"no_such_commitment\") if not found, Err(\"not_reserved\") if the commitment is not currently in Reserved state (Released/Settled are terminal — releasing twice must fail, not silently succeed). On success: decrements the owning treasury's committed_cents by the commitment's amount_cents, sets the commitment's state to Released, and appends a \"treasury.released\" event (payload: company, contract_id, commitment_id, amount_cents, currency). fn settle_commitment(db :: Db, log :: tlog.Log, commitment_id :: Str, paid_cents :: Int) -> [sql, time] Result[Unit, Str] — pays out a reservation. Fails Err(\"no_such_commitment\") if not found, Err(\"not_reserved\") if not currently Reserved, Err(\"invalid_amount\") if paid_cents < 0, Err(\"overpay\") if paid_cents > the commitment's amount_cents (a settlement can pay LESS than reserved -- e.g. a partial delivery -- but never more). On success: decrements the treasury's balance_cents by paid_cents (money actually leaves the treasury) AND decrements committed_cents by the commitment's FULL amount_cents (the entire reservation is released, whether or not paid_cents used all of it), sets the commitment's state to Settled, and appends a \"treasury.settled\" event (payload: company, contract_id, commitment_id, amount_cents, paid_cents, currency). Every one of these five effectful functions must leave the database completely unchanged (no partial writes) on any Err path -- check every precondition before making any sql.exec call that mutates a row."
+
+check       = ["src/treasury.lex"]
+spec_check  = []
+test        = ["tests"]
+verified    = ["verified.type_check", "verified.test"]
+verified_on = ["src/treasury.lex:verified.type_check", "src/treasury.lex:verified.test"]
