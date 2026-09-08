@@ -1,0 +1,23 @@
+# lex-economy task spec — LEX_TASK_SPEC=tasks/identity.task
+#
+# NOT a thin wrapper over lex-soft/identity.lex, despite the original design doc's
+# table saying so — lex-soft's real identity.lex is DB-backed accounts/credentials/
+# JWT auth (Account/Credential/Subject), and trust.lex is org trust-LEVEL presets
+# (spend_gate/arm_gate/escalate_first). Neither has a keypair-signing primitive.
+# This module is self-contained, built directly on std.crypto's ed25519 functions
+# (verified against crates/lex-types/src/builtins.rs, not guessed):
+#
+#   ed25519_public_key(secret :: Bytes) -> Result[Bytes, Str]
+#   ed25519_sign(secret :: Bytes, message :: Bytes) -> Result[Bytes, Str]
+#   ed25519_verify(public :: Bytes, message :: Bytes, sig :: Bytes) -> Bool
+#
+# There is no ed25519_generate — a secret key is 32 random bytes, generated with
+# crypto.random(32) (an [random]-effect stdlib function).
+
+goal = "Create src/identity.lex for a company identity module, built directly on std.crypto's ed25519 functions (do not assume any other package's identity module exists or has a compatible shape — this one is self-contained). Define: type KeyPair = { secret :: Bytes, public :: Bytes }; type CompanyId = { id :: Str, public_key_b64 :: Str }; type CompanyStatus = Incorporated | Active | Restructuring | Liquidated; type Company = { id :: CompanyId, name :: Str, mission :: Str, status :: CompanyStatus }. Implement: fn generate_key() -> [random] Result[KeyPair, Str] — generate a 32-byte secret via std.crypto.random(32), derive the public key via std.crypto.ed25519_public_key, return both as a KeyPair (or the underlying error). fn incorporate(name :: Str, mission :: Str, key :: KeyPair) -> Result[Company, Str] — the CompanyId's id field MUST be a hex-encoded SHA-256 hash of the key's public bytes (std.crypto.sha256 then std.crypto.hex_encode), and public_key_b64 MUST be std.crypto.base64_encode of the public key bytes; status starts as Incorporated. fn sign(key :: KeyPair, payload :: Str) -> Result[Str, Str] — sign payload (as bytes via std.bytes.from_str) with the key's secret using std.crypto.ed25519_sign, hex-encode the result. fn verify_signature(id :: CompanyId, payload :: Str, sig :: Str) -> Bool — decode id's public_key_b64 and the hex-encoded sig, then call std.crypto.ed25519_verify; return false (not an error) for any malformed input rather than crashing. The core invariant: incorporate must be DETERMINISTIC in the id it derives from a given key — the same key always produces the same CompanyId.id, and two different keys must produce different ids (this follows from SHA-256, but write an example or test that actually exercises it with two distinct generated keys, not just asserted by argument). Add examples {} blocks to every pure function."
+
+check       = ["src/identity.lex"]
+spec_check  = []
+test        = []
+verified    = ["verified.type_check"]
+verified_on = ["src/identity.lex:verified.type_check"]
