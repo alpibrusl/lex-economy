@@ -1,5 +1,23 @@
 # lex-economy task spec — LEX_TASK_SPEC=tasks/treasury.task
 #
+# First revision of this file asked for `test = ["tests"]` and a per-file
+# `verified_on` entry for `verified.test` — both wrong. `test` in this repo's
+# task-spec schema (lex-code/src/task_spec.lex's TestPasses) runs `lex run
+# <path> run_all`, not `lex test <dir>`; this project's own convention (like
+# identity/contract/reputation before it) is `tests/test_*.lex` files
+# discovered by `lex test`, which has no `run_all` entrypoint at that path, so
+# TestPasses always fails here by construction. Separately, `verified.test`
+# records are written with target "tests" (the whole directory `lex_test` was
+# given), never a specific src file, so VerifiedTargetSeen("src/treasury.lex",
+# "verified.test") can never be satisfied either. Also found, while chasing
+# why: `verified.test`'s directory-target sig computation was broken in
+# lex-code itself (sig_for called io.read on a directory, which always
+# errors, so the record's sig was always "" and therefore always Stale) —
+# fixed upstream (lex-code#154) rather than worked around here. Left
+# `verified.type_check` as the only per-file criterion and added a
+# project-wide `verified.test` criterion instead, now that it can actually
+# pass.
+#
 # Groundwork verified before writing this (do not trust the design doc's API
 # sketch blindly — it named lex-guard's models.Policy/SpendIntent as the
 # gating layer, and that shape does not fit here):
@@ -41,6 +59,6 @@ goal = "Create src/treasury.lex, a SQL-backed treasury/commitment ledger. Import
 
 check       = ["src/treasury.lex"]
 spec_check  = []
-test        = ["tests"]
+test        = []
 verified    = ["verified.type_check", "verified.test"]
-verified_on = ["src/treasury.lex:verified.type_check", "src/treasury.lex:verified.test"]
+verified_on = ["src/treasury.lex:verified.type_check"]
