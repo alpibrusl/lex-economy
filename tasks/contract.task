@@ -1,0 +1,19 @@
+# lex-economy task spec — LEX_TASK_SPEC=tasks/contract.task
+#
+# Scoped down from the original design doc's Contract type, which referenced
+# Criterion (shared with the not-yet-built request/bid module) and a full
+# Verdict type (shared with the not-yet-built evidence/verdict module), and an
+# invariant needing a WorkRequest's budget_ceiling (also not yet built). This
+# module defines minimal LOCAL versions of Verdict and Money instead of
+# blocking on modules that don't exist yet — reconcile these with the shared
+# versions once request/bid and evidence/verdict land; do not treat this
+# file's Money/Verdict as final. The state machine itself (the actual point
+# of this module) does not depend on that reconciliation.
+
+goal = "Create src/contract.lex, a PURE total state machine for a contract's lifecycle -- no storage, no lex-orm, no effects anywhere in this file. Define: type Money = { cents :: Int, currency :: Str } (integer cents only). type Verdict = Fulfilled | PartiallyFulfilled(List[Str]) | Rejected(List[Str]) | Ambiguous(List[Str]). type ContractState = Awarded | InProgress | Delivered | Verified(Verdict) | Settled | Disputed | Cancelled. type ContractEvent = WasStarted | WasDelivered | WasVerified(Verdict) | WasSettled | WasDisputed | WasCancelled. type Contract = { id :: Str, buyer :: Str, supplier :: Str, price :: Money, state :: ContractState }. Implement fn transition(c :: Contract, event :: ContractEvent) -> Result[Contract, Str] as a TOTAL function over every (state, event) pair -- every combination must return either Ok(updated contract) or Err(a short reason), never panic or be left unhandled. The exact rules: Awarded+WasStarted -> InProgress. InProgress+WasDelivered -> Delivered. Delivered+WasVerified(v) -> Verified(v). Verified(_)+WasSettled -> Settled. Verified(_)+WasDisputed -> Disputed. Delivered+WasDisputed -> Disputed (a delivery can be disputed before it is ever verified). Any of Awarded/InProgress/Delivered/Verified(_)+WasCancelled -> Cancelled (a contract can be cancelled any time before it reaches a terminal state). Every other (state, event) combination is Err -- for example Awarded+WasSettled, or WasStarted applied twice, must be rejected, not silently accepted. Also implement fn is_terminal(c :: Contract) -> Bool, true exactly for Settled, Disputed, and Cancelled, false for every other state. Write examples {} blocks on transition and is_terminal covering: at least one valid transition from each state, at least 2 invalid/rejected transitions, the Disputed-from-Delivered path specifically (not just Disputed-from-Verified), and is_terminal true/false cases for every state variant."
+
+check       = ["src/contract.lex"]
+spec_check  = []
+test        = []
+verified    = ["verified.type_check"]
+verified_on = ["src/contract.lex:verified.type_check"]
