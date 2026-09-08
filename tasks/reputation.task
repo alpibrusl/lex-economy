@@ -1,0 +1,33 @@
+# lex-economy task spec — LEX_TASK_SPEC=tasks/reputation.task
+#
+# Scoped down from the design doc's full Reputation type. Dropped
+# median_delivery_delay_min, median_cost_variance_bp and
+# repeat_customer_rate_bp for this first version: each needs extra
+# per-event data (delay/variance numbers, counterparty identity) and a
+# median/distinct-count algorithm that deserve their own careful design,
+# not a first-pass guess bundled into an otherwise-simple counting module.
+# Keeping the four fields that are pure counts/ratios over events that
+# already have an obvious (Str) payload shape. Widen this type later once
+# the events that would carry delay/variance/counterparty data actually
+# exist (contract.lex today is pure and emits no trail events at all).
+#
+# Event kind vocabulary this module interprets (not yet emitted by
+# anything in this repo -- this task defines the schema so `project` has
+# something concrete to parse; wiring a real emitter is separate work):
+#   "contract_settled"    payload {"company": "<id>"}
+#   "contract_failed"     payload {"company": "<id>"}
+#   "contract_disputed"   payload {"company": "<id>"}
+#   "verification_passed" payload {"company": "<id>"}
+#   "verification_failed" payload {"company": "<id>"}
+# Any other kind, any event whose payload_json fails to parse, or any
+# event missing a string "company" field, is silently skipped -- not an
+# error. An event for a DIFFERENT company than the one being projected is
+# also skipped.
+
+goal = "Create src/reputation.lex. Import \"lex-trail/event\" as ev (its real type is: type Event = { id :: Str, kind :: Str, parent :: Option[Str], payload_json :: Str, ts_ms :: Int } -- do not assume any other shape) and \"lex-schema/json_value\" as jv for parsing payload_json (jv.parse_into_errors(Str) -> Result[jv.Json, Errors], jv.get_field(json, name) -> Option[jv.Json], JStr(s) pattern for a string field). Define type Reputation = { company :: Str, contracts_completed :: Int, contracts_failed :: Int, contracts_disputed :: Int, verification_pass_rate_bp :: Int }. Implement fn project(events :: List[ev.Event], company :: Str) -> Reputation as a PURE fold over events (no effects, no storage). For each event: parse payload_json as JSON; if parsing fails, or the JSON has no string \"company\" field, or that company does not equal the `company` argument, skip the event entirely (it contributes nothing, and must not crash or short-circuit the fold). Otherwise dispatch on event.kind: \"contract_settled\" increments contracts_completed; \"contract_failed\" increments contracts_failed; \"contract_disputed\" increments contracts_disputed; \"verification_passed\" and \"verification_failed\" are counted separately (do not conflate with contracts_completed/failed) to compute verification_pass_rate_bp = round((verification_passed_count * 10000) / (verification_passed_count + verification_failed_count)) as an integer in basis points (0 to 10000); any other kind is skipped. verification_pass_rate_bp MUST be exactly 0 (not a crash, not a division by zero) when there are zero verification_passed/verification_failed events for that company. Use lex-trail/event's own ev.make(kind, parent, payload_json, ts_ms) -> Event constructor to build test events (it computes the id field itself; do not hand-construct an Event's id). Write an examples {} block on project covering: a mix of events for the target company and events for a DIFFERENT company (which must be ignored), an unparseable payload_json string (which must be skipped, not error), a known kind with a missing company field (skipped), an unknown kind (skipped), the zero-verification-events case (rate is exactly 0), and at least one case with a non-trivial pass/fail mix where the exact expected basis-point value is computed by hand in the comment next to the example so the number is independently checkable, not just asserted."
+
+check       = ["src/reputation.lex"]
+spec_check  = []
+test        = []
+verified    = ["verified.type_check"]
+verified_on = ["src/reputation.lex:verified.type_check"]
