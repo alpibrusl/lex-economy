@@ -1,0 +1,32 @@
+# lex-economy task spec — LEX_TASK_SPEC=tasks/consortium.task
+#
+# The design doc's consortium module has THREE functions: create(db, log,
+# spec) (persist a new consortium), observe(db, id) -> PortfolioView
+# (aggregate every member company's treasuries + open contracts + spend
+# across the whole consortium), and should_terminate(view, rule) -> Bool
+# (pure). Only the last is buildable right now: observe needs to query
+# "open contracts" across companies, and nothing in this repo persists a
+# contract.Contract anywhere -- contract.lex is entirely pure/in-memory,
+# settlement.lex passes Contract values in and back out but never stores
+# one. Building a real observe would mean inventing a whole new contracts-
+# persistence table first, which is genuinely new infrastructure, not
+# composition of what already exists -- the same class of "needs
+# groundwork" gap capability/evidence were flagged with before their own
+# tasks got written, just discovered one module later. create has the same
+# problem (nothing to persist a Consortium's own row into yet either).
+#
+# So this task builds ONLY the pure kernel: the termination rule itself,
+# which the design doc's own text states precisely: "objective met, max
+# spend reached, deadline passed, or no open contracts and no capital to
+# start new ones." That rule doesn't need to know how a PortfolioView was
+# computed, only what one contains -- so PortfolioView is defined here as a
+# plain data record a future observe() would construct, not something this
+# task computes.
+
+goal = "Create src/consortium.lex. Import \"./contract\" as contract to reuse contract.Money (do not redefine a local Money type). Define: type PortfolioView = { objective_met :: Bool, total_spent_cents :: Int, open_contracts :: Int, remaining_capital_cents :: Int, now_ms :: Int } -- a snapshot of a consortium's state at one point in time (a future observe() function, not part of this task, would construct one of these by aggregating every member company's treasury and contract state; this task only consumes it). type TerminationRule = { max_spend_cents :: Int, deadline_ms :: Int }. type Consortium = { id :: Str, objective :: Str, companies :: List[Str], max_spend :: contract.Money }. Implement fn should_terminate(view :: PortfolioView, rule :: TerminationRule) -> Bool -- PURE, true if ANY of these hold (evaluate all four independently, do not short-circuit in a way that skips checking the later ones when an earlier one is already true -- this doesn't matter for the boolean RESULT but every example must exercise each condition in isolation): (1) view.objective_met is true; (2) view.total_spent_cents >= rule.max_spend_cents; (3) view.now_ms > rule.deadline_ms; (4) view.open_contracts == 0 AND view.remaining_capital_cents <= 0 (both halves of condition 4 must hold together -- zero open contracts with capital still remaining is NOT a reason to terminate, since a new contract could still be opened; nonzero open contracts with zero capital is also NOT a reason to terminate on its own, since existing contracts may still resolve). False only when NONE of the four conditions hold. Also implement fn new_consortium(id :: Str, objective :: Str, companies :: List[Str], max_spend :: contract.Money) -> Consortium -- a pure constructor, no validation beyond assembling the record (validating things like non-empty companies or positive max_spend is future work once a real create(db, ...) exists to enforce it against). Write an examples {} block on should_terminate covering: a view where NONE of the four conditions hold (false); each of the four conditions true in isolation (objective_met alone; spend at or over the ceiling alone -- test both exactly-at and over; past the deadline alone; zero contracts AND zero-or-negative capital together); and the two \"almost condition 4\" near-misses that must NOT terminate (zero open contracts but capital still positive; capital exhausted but at least one open contract remains). Write an examples {} block on new_consortium covering one straightforward construction. Both functions are pure -- no effects, no storage, no imports of ./treasury, ./request_bid, ./settlement, ./capability, or ./evidence (this module does not compose the others yet -- it only defines the termination rule those modules' future aggregation would eventually feed)."
+
+check       = ["src/consortium.lex"]
+spec_check  = []
+test        = []
+verified    = ["verified.type_check"]
+verified_on = ["src/consortium.lex:verified.type_check"]
