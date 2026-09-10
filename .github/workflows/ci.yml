@@ -1,0 +1,41 @@
+name: CI
+on:
+  push: { branches: [main] }
+  pull_request:
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Lex
+        run: |
+          set -euo pipefail
+          V=0.11.5; T=x86_64-unknown-linux-gnu
+          curl -fsSL "https://github.com/alpibrusl/lex-lang/releases/download/v$V/lex-v$V-$T.tar.gz" -o /tmp/lex.tgz
+          tar -xzf /tmp/lex.tgz -C /tmp
+          echo "/tmp/lex-v$V-$T" >> "$GITHUB_PATH"
+      - name: Install deps
+        run: lex pkg install
+      - name: Type-check
+        run: |
+          set -euo pipefail
+          for f in src/*.lex; do echo "== $f"; lex check --strict "$f"; done
+      # `lex test` reports "ok" for each of these files WITHOUT running them:
+      # every suite here is an effectful `run_all` (the convention this repo
+      # chose, see tasks/treasury.task), and `lex test` only executes pure
+      # `examples` blocks. A green `lex test` was therefore proving nothing --
+      # the suites had never actually run in CI or anywhere else. Invoke
+      # run_all directly and fail on anything that is not Ok.
+      - name: Tests
+        run: |
+          set -euo pipefail
+          fail=0
+          for f in tests/test_*.lex; do
+            out=$(lex run --allow-effects sql,fs_write,time,net,crypto,random "$f" run_all 2>&1 | tail -1)
+            if [ "$out" = "true" ] || [ "$out" = '{"$variant":"Ok","args":[null]}' ]; then
+              echo "ok   $f"
+            else
+              echo "FAIL $f -> $out"; fail=1
+            fi
+          done
+          exit $fail

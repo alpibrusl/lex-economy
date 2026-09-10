@@ -51,7 +51,7 @@ fn settle_contract(db :: Db, log :: tlog.Log, c :: contract.Contract, commitment
 }
 
 fn settle_paying(db :: Db, log :: tlog.Log, c :: contract.Contract, commitment_id :: Str, paid_cents :: Int) -> [sql, time] Result[contract.Contract, Str] {
-  match treasury.settle_commitment(db, log, commitment_id, paid_cents) {
+  match treasury.settle_commitment(db, log, commitment_id, paid_cents, c.supplier) {
     Err(e) => Err(e),
     Ok(_) => match contract.transition(c, contract.WasSettled) {
       Err(e) => Err(e),
