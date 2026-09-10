@@ -183,48 +183,78 @@ fn release_commitment(db :: Db, log :: tlog.Log, commitment_id :: Str) -> [sql, 
   }
 }
 
-fn settle_commitment(db :: Db, log :: tlog.Log, commitment_id :: Str, paid_cents :: Int) -> [sql, time] Result[Unit, Str] {
+# Settle a reserved commitment: the buyer is debited and the SUPPLIER is
+# credited, both inside one transaction. Paying out used to debit the buyer
+# alone, so every settled contract destroyed its price -- a supplier could
+# deliver forever and never accumulate a cent. The supplier is a parameter
+# because a commitment records only who reserved the funds, not who earns them.
+fn settle_commitment(db :: Db, log :: tlog.Log, commitment_id :: Str, paid_cents :: Int, supplier :: Str) -> [sql, time] Result[Unit, Str] {
   if paid_cents < 0 {
     Err("invalid_amount")
   } else {
     match get_commitment(db, commitment_id) {
       Err(e) => Err(e),
       Ok(None) => Err("no_such_commitment"),
-      Ok(Some(c)) => {
-        match c.state {
-          CommitReleased => Err("not_reserved"),
-          CommitSettled => Err("not_reserved"),
-          CommitReserved => {
-            if paid_cents > c.amount_cents {
-              Err("overpay")
-            } else {
-              match get_treasury(db, c.company) {
-                Err(e) => Err(e),
-                Ok(None) => Err("no_such_treasury"),
-                Ok(Some(t)) => {
-                  let new_balance := t.balance_cents - paid_cents
-                  let new_committed := t.committed_cents - c.amount_cents
-                  let payload := str.join(["{", json.stringify("company"), ":", json.stringify(c.company), ",", json.stringify("contract_id"), ":", json.stringify(c.contract_id), ",", json.stringify("commitment_id"), ":", json.stringify(commitment_id), ",", json.stringify("amount_cents"), ":", int.to_str(c.amount_cents), ",", json.stringify("paid_cents"), ":", int.to_str(paid_cents), ",", json.stringify("currency"), ":", json.stringify(c.currency), "}"], "")
-                  in_transaction(db, fn (tx :: Db) -> [sql, time] Result[Unit, Str] {
-                    match sql.exec(tx, "UPDATE treasuries SET balance_cents = ?, committed_cents = ? WHERE company = ?", [PInt(new_balance), PInt(new_committed), PStr(c.company)]) {
-                      Err(e) => Err(e.message),
-                      Ok(_) => match sql.exec(tx, "UPDATE commitments SET state = ? WHERE id = ?", [PStr(state_to_str(CommitSettled)), PStr(commitment_id)]) {
-                        Err(e2) => Err(e2.message),
-                        Ok(_) => match tlog.append(log, "treasury.settled", None, payload) {
-                          Err(e3) => Err(e3),
-                          Ok(_) => Ok(()),
-                        },
-                      },
-                    }
-                  })
-                },
-              }
-            }
-          },
-        }
+      Ok(Some(c)) => match c.state {
+        CommitReleased => Err("not_reserved"),
+        CommitSettled => Err("not_reserved"),
+        CommitReserved => if paid_cents > c.amount_cents {
+          Err("overpay")
+        } else {
+          settle_reserved(db, log, c, commitment_id, paid_cents, supplier)
+        },
       },
     }
   }
+}
+
+# Both treasuries are checked before anything is written, the same
+# validate-before-mutate rule the rest of this module follows: a payment that
+# has nowhere to land is refused outright rather than debited into nothing.
+fn settle_reserved(db :: Db, log :: tlog.Log, c :: Commitment, commitment_id :: Str, paid_cents :: Int, supplier :: Str) -> [sql, time] Result[Unit, Str] {
+  match get_treasury(db, c.company) {
+    Err(e) => Err(e),
+    Ok(None) => Err("no_such_treasury"),
+    Ok(Some(_)) => match get_treasury(db, supplier) {
+      Err(e2) => Err(e2),
+      Ok(None) => Err("no_such_supplier_treasury"),
+      Ok(Some(st)) => if st.currency != c.currency {
+        Err("currency_mismatch")
+      } else {
+        write_settlement(db, log, c, commitment_id, paid_cents, supplier)
+      },
+    },
+  }
+}
+
+# The two legs are RELATIVE updates, never read-then-write absolutes. A
+# self-contract (buyer == supplier, which the loom consortium really does
+# issue when procurement decides Build over Buy) touches one row twice, and
+# two relative updates compose to the correct net zero -- two computed
+# absolutes would have the second silently clobber the first.
+fn write_settlement(db :: Db, log :: tlog.Log, c :: Commitment, commitment_id :: Str, paid_cents :: Int, supplier :: Str) -> [sql, time] Result[Unit, Str] {
+  let payload := settled_payload(c, commitment_id, paid_cents, supplier)
+  let debit := "UPDATE treasuries SET balance_cents = balance_cents - ?, committed_cents = committed_cents - ? WHERE company = ?"
+  let credit := "UPDATE treasuries SET balance_cents = balance_cents + ? WHERE company = ?"
+  in_transaction(db, fn (tx :: Db) -> [sql, time] Result[Unit, Str] {
+    match sql.exec(tx, debit, [PInt(paid_cents), PInt(c.amount_cents), PStr(c.company)]) {
+      Err(e) => Err(e.message),
+      Ok(_) => match sql.exec(tx, credit, [PInt(paid_cents), PStr(supplier)]) {
+        Err(e2) => Err(e2.message),
+        Ok(_) => match sql.exec(tx, "UPDATE commitments SET state = ? WHERE id = ?", [PStr(state_to_str(CommitSettled)), PStr(commitment_id)]) {
+          Err(e3) => Err(e3.message),
+          Ok(_) => match tlog.append(log, "treasury.settled", None, payload) {
+            Err(e4) => Err(e4),
+            Ok(_) => Ok(()),
+          },
+        },
+      },
+    }
+  })
+}
+
+fn settled_payload(c :: Commitment, commitment_id :: Str, paid_cents :: Int, supplier :: Str) -> Str {
+  str.join(["{", json.stringify("company"), ":", json.stringify(c.company), ",", json.stringify("supplier"), ":", json.stringify(supplier), ",", json.stringify("contract_id"), ":", json.stringify(c.contract_id), ",", json.stringify("commitment_id"), ":", json.stringify(commitment_id), ",", json.stringify("amount_cents"), ":", int.to_str(c.amount_cents), ",", json.stringify("paid_cents"), ":", int.to_str(paid_cents), ",", json.stringify("currency"), ":", json.stringify(c.currency), "}"], "")
 }
 
 fn in_transaction[A](db :: Db, body :: (Db) -> [sql, time] Result[A, Str]) -> [sql, time] Result[A, Str] {

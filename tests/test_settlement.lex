@@ -137,7 +137,9 @@ fn test_open_contract_insufficient_funds(db :: Db, log :: tlog.Log) -> [sql, tim
 fn test_settle_fulfilled(db :: Db, log :: tlog.Log) -> [sql, time] Result[Unit, Str] {
   match treasury.open_treasury(db, "Buyer5", "USD", 100000) {
     Err(e) => Err(e),
-    Ok(_) => match treasury.commit_funds(db, log, "Buyer5", "contract-5", "commit-5", 30000, "USD") {
+    Ok(_) => match treasury.open_treasury(db, "Supplier5", "USD", 0) {
+      Err(e) => Err(e),
+      Ok(_) => match treasury.commit_funds(db, log, "Buyer5", "contract-5", "commit-5", 30000, "USD") {
       Err(e) => Err(e),
       Ok(_) => {
         let c := sample_contract("contract-5", "Buyer5", "Supplier5", 30000, contract.Verified(contract.Fulfilled))
@@ -151,11 +153,15 @@ fn test_settle_fulfilled(db :: Db, log :: tlog.Log) -> [sql, time] Result[Unit, 
               Ok(None) => Err("treasury missing"),
               Ok(Some(t)) => match assert_eq("balance after fulfilled settle", t.balance_cents, 70000) {
                 Err(e) => Err(e),
-                Ok(_) => assert_eq("committed after fulfilled settle", t.committed_cents, 0),
+                Ok(_) => match assert_eq("committed after fulfilled settle", t.committed_cents, 0) {
+                  Err(e) => Err(e),
+                  Ok(_) => assert_supplier_paid(db, "Supplier5", 30000),
+                },
               },
             }
           },
         }
+      },
       },
     },
   }
@@ -164,7 +170,9 @@ fn test_settle_fulfilled(db :: Db, log :: tlog.Log) -> [sql, time] Result[Unit, 
 fn test_settle_partially_fulfilled(db :: Db, log :: tlog.Log) -> [sql, time] Result[Unit, Str] {
   match treasury.open_treasury(db, "Buyer6", "USD", 100000) {
     Err(e) => Err(e),
-    Ok(_) => match treasury.commit_funds(db, log, "Buyer6", "contract-6", "commit-6", 20000, "USD") {
+    Ok(_) => match treasury.open_treasury(db, "Supplier6", "USD", 0) {
+      Err(e) => Err(e),
+      Ok(_) => match treasury.commit_funds(db, log, "Buyer6", "contract-6", "commit-6", 20000, "USD") {
       Err(e) => Err(e),
       Ok(_) => {
         let c := sample_contract("contract-6", "Buyer6", "Supplier6", 20000, contract.Verified(contract.PartiallyFulfilled(["license"])))
@@ -178,13 +186,27 @@ fn test_settle_partially_fulfilled(db :: Db, log :: tlog.Log) -> [sql, time] Res
               Ok(None) => Err("treasury missing"),
               Ok(Some(t)) => match assert_eq("balance after partial settle", t.balance_cents, 88000) {
                 Err(e) => Err(e),
-                Ok(_) => assert_eq("committed after partial settle", t.committed_cents, 0),
+                Ok(_) => match assert_eq("committed after partial settle", t.committed_cents, 0) {
+                  Err(e) => Err(e),
+                  Ok(_) => assert_supplier_paid(db, "Supplier6", 12000),
+                },
               },
             }
           },
         }
       },
+      },
     },
+  }
+}
+
+# The supplier's side of a settled contract: what the buyer paid is what the
+# supplier now holds.
+fn assert_supplier_paid(db :: Db, supplier :: Str, want :: Int) -> [sql] Result[Unit, Str] {
+  match treasury.get_treasury(db, supplier) {
+    Err(e) => Err(e),
+    Ok(None) => Err("supplier treasury missing"),
+    Ok(Some(t)) => assert_eq("supplier credited", t.balance_cents, want),
   }
 }
 

@@ -119,11 +119,18 @@ fn test_commit_release(db :: Db, log :: tlog.Log) -> [sql, time] Result[Unit, St
 }
 
 fn test_settle_partial_and_overpay(db :: Db, log :: tlog.Log) -> [sql, time] Result[Unit, Str] {
+  match tr.open_treasury(db, "PayeeCo", "USD", 0) {
+    Err(e) => Err(e),
+    Ok(_) => test_settle_partial_and_overpay_body(db, log),
+  }
+}
+
+fn test_settle_partial_and_overpay_body(db :: Db, log :: tlog.Log) -> [sql, time] Result[Unit, Str] {
   match tr.open_treasury(db, "SettleCo", "USD", 1000) {
     Err(e) => Err(e),
     Ok(_) => match tr.commit_funds(db, log, "SettleCo", "c-s1", "cm-s1", 400, "USD") {
       Err(e) => Err(e),
-      Ok(_) => match tr.settle_commitment(db, log, "cm-s1", 250) {
+      Ok(_) => match tr.settle_commitment(db, log, "cm-s1", 250, "PayeeCo") {
         Err(e) => Err(e),
         Ok(_) => match tr.get_treasury(db, "SettleCo") {
           Err(e) => Err(e),
@@ -142,7 +149,7 @@ fn test_settle_partial_and_overpay(db :: Db, log :: tlog.Log) -> [sql, time] Res
                     Err(e) => Err(e),
                     Ok(_) => match tr.commit_funds(db, log, "OverpayCo", "c-s2", "cm-s2", 300, "USD") {
                       Err(e) => Err(e),
-                      Ok(_) => match tr.settle_commitment(db, log, "cm-s2", 301) {
+                      Ok(_) => match tr.settle_commitment(db, log, "cm-s2", 301, "PayeeCo") {
                         Ok(_) => Err("should fail overpay"),
                         Err("overpay") => match tr.get_treasury(db, "OverpayCo") {
                           Err(e) => Err(e),
@@ -157,7 +164,7 @@ fn test_settle_partial_and_overpay(db :: Db, log :: tlog.Log) -> [sql, time] Res
                                 Ok(Some(c2)) => if c2.state != tr.CommitReserved {
                                   Err("cm-s2 changed state on overpay fail")
                                 } else {
-                                  match tr.settle_commitment(db, log, "cm-s2", -1) {
+                                  match tr.settle_commitment(db, log, "cm-s2", -1, "PayeeCo") {
                                     Ok(_) => Err("should fail negative paid"),
                                     Err("invalid_amount") => match tr.get_treasury(db, "OverpayCo") {
                                       Err(e) => Err(e),
@@ -189,6 +196,13 @@ fn test_settle_partial_and_overpay(db :: Db, log :: tlog.Log) -> [sql, time] Res
 }
 
 fn test_error_paths(db :: Db, log :: tlog.Log) -> [sql, time] Result[Unit, Str] {
+  match tr.open_treasury(db, "PayeeCo", "USD", 0) {
+    Err(e) => Err(e),
+    Ok(_) => test_error_paths_body(db, log),
+  }
+}
+
+fn test_error_paths_body(db :: Db, log :: tlog.Log) -> [sql, time] Result[Unit, Str] {
   match tr.open_treasury(db, "ErrorCo", "USD", 1000) {
     Err(e) => Err(e),
     Ok(_) => match tr.commit_funds(db, log, "MissingCo", "c-1", "cm-missing", 100, "USD") {
@@ -205,7 +219,7 @@ fn test_error_paths(db :: Db, log :: tlog.Log) -> [sql, time] Result[Unit, Str] 
               Ok(Some(_)) => Err("ghost commitment found"),
               Ok(None) => match tr.release_commitment(db, log, "cm-ghost") {
                 Ok(_) => Err("should fail no_such_commitment on release"),
-                Err("no_such_commitment") => match tr.settle_commitment(db, log, "cm-ghost", 100) {
+                Err("no_such_commitment") => match tr.settle_commitment(db, log, "cm-ghost", 100, "PayeeCo") {
                   Ok(_) => Err("should fail no_such_commitment on settle"),
                   Err("no_such_commitment") => match tr.get_treasury(db, "ErrorCo") {
                     Err(e) => Err(e),
@@ -230,6 +244,125 @@ fn test_error_paths(db :: Db, log :: tlog.Log) -> [sql, time] Result[Unit, Str] 
   }
 }
 
+# A settled contract must MOVE money, not burn it: the buyer's debit and the
+# supplier's credit are the two halves of one payment, and the total across
+# both treasuries is the invariant that says so. Before the supplier leg
+# existed this test's conservation check would have failed by the full price.
+fn test_supplier_is_credited(db :: Db, log :: tlog.Log) -> [sql, time] Result[Unit, Str] {
+  match tr.open_treasury(db, "BuyerCo", "USD", 1000) {
+    Err(e) => Err(e),
+    Ok(_) => match tr.open_treasury(db, "SellerCo", "USD", 500) {
+      Err(e) => Err(e),
+      Ok(_) => match tr.commit_funds(db, log, "BuyerCo", "c-p1", "cm-p1", 400, "USD") {
+        Err(e) => Err(e),
+        Ok(_) => match tr.settle_commitment(db, log, "cm-p1", 400, "SellerCo") {
+          Err(e) => Err(e),
+          Ok(_) => check_both_sides(db, "BuyerCo", 600, "SellerCo", 900, 1500),
+        },
+      },
+    },
+  }
+}
+
+fn check_both_sides(db :: Db, buyer :: Str, want_buyer :: Int, seller :: Str, want_seller :: Int, want_total :: Int) -> [sql] Result[Unit, Str] {
+  match tr.get_treasury(db, buyer) {
+    Err(e) => Err(e),
+    Ok(None) => Err("buyer treasury missing"),
+    Ok(Some(b)) => match tr.get_treasury(db, seller) {
+      Err(e2) => Err(e2),
+      Ok(None) => Err("seller treasury missing"),
+      Ok(Some(sl)) => match assert_eq("buyer debited", b.balance_cents, want_buyer) {
+        Err(e3) => Err(e3),
+        Ok(_) => match assert_eq("supplier credited", sl.balance_cents, want_seller) {
+          Err(e4) => Err(e4),
+          Ok(_) => match assert_eq("buyer commitment released", b.committed_cents, 0) {
+            Err(e5) => Err(e5),
+            Ok(_) => assert_eq("money conserved across both treasuries", b.balance_cents + sl.balance_cents, want_total),
+          },
+        },
+      },
+    },
+  }
+}
+
+# A partial payout pays only what the verdict earned; the unpaid remainder is
+# not credited to anyone, but it is released from the buyer's committed funds.
+fn test_partial_credits_only_paid(db :: Db, log :: tlog.Log) -> [sql, time] Result[Unit, Str] {
+  match tr.open_treasury(db, "PartBuyer", "USD", 1000) {
+    Err(e) => Err(e),
+    Ok(_) => match tr.open_treasury(db, "PartSeller", "USD", 0) {
+      Err(e) => Err(e),
+      Ok(_) => match tr.commit_funds(db, log, "PartBuyer", "c-p2", "cm-p2", 600, "USD") {
+        Err(e) => Err(e),
+        Ok(_) => match tr.settle_commitment(db, log, "cm-p2", 300, "PartSeller") {
+          Err(e) => Err(e),
+          Ok(_) => check_both_sides(db, "PartBuyer", 700, "PartSeller", 300, 1000),
+        },
+      },
+    },
+  }
+}
+
+# Buyer == supplier: the loom consortium really issues these when procurement
+# decides Build over Buy. One row is debited and credited in the same
+# transaction, so the balance must net to zero and only the commitment is
+# released. Computing absolutes from two separate reads would clobber a leg
+# and silently invent or destroy the whole price here.
+fn test_self_contract_nets_to_zero(db :: Db, log :: tlog.Log) -> [sql, time] Result[Unit, Str] {
+  match tr.open_treasury(db, "SoloCo", "USD", 2000) {
+    Err(e) => Err(e),
+    Ok(_) => match tr.commit_funds(db, log, "SoloCo", "c-p3", "cm-p3", 800, "USD") {
+      Err(e) => Err(e),
+      Ok(_) => match tr.settle_commitment(db, log, "cm-p3", 800, "SoloCo") {
+        Err(e) => Err(e),
+        Ok(_) => match tr.get_treasury(db, "SoloCo") {
+          Err(e) => Err(e),
+          Ok(None) => Err("solo treasury missing"),
+          Ok(Some(t)) => match assert_eq("self-contract balance unchanged", t.balance_cents, 2000) {
+            Err(e) => Err(e),
+            Ok(_) => assert_eq("self-contract commitment released", t.committed_cents, 0),
+          },
+        },
+      },
+    },
+  }
+}
+
+# A payment with nowhere to land is refused before anything is written, and a
+# supplier banking a different currency is refused too. Both leave the buyer
+# exactly as it was, commitment still reserved.
+fn test_unpayable_supplier_refused(db :: Db, log :: tlog.Log) -> [sql, time] Result[Unit, Str] {
+  match tr.open_treasury(db, "RefuseCo", "USD", 1000) {
+    Err(e) => Err(e),
+    Ok(_) => match tr.open_treasury(db, "EuroCo", "EUR", 0) {
+      Err(e) => Err(e),
+      Ok(_) => match tr.commit_funds(db, log, "RefuseCo", "c-p4", "cm-p4", 500, "USD") {
+        Err(e) => Err(e),
+        Ok(_) => match tr.settle_commitment(db, log, "cm-p4", 500, "NoSuchCo") {
+          Ok(_) => Err("should refuse a supplier with no treasury"),
+          Err("no_such_supplier_treasury") => match tr.settle_commitment(db, log, "cm-p4", 500, "EuroCo") {
+            Ok(_) => Err("should refuse a supplier banking another currency"),
+            Err("currency_mismatch") => check_untouched(db, "RefuseCo", 1000, 500),
+            Err(e) => Err(str.concat("unexpected currency error: ", e)),
+          },
+          Err(e) => Err(str.concat("unexpected missing-supplier error: ", e)),
+        },
+      },
+    },
+  }
+}
+
+fn check_untouched(db :: Db, company :: Str, want_balance :: Int, want_committed :: Int) -> [sql] Result[Unit, Str] {
+  match tr.get_treasury(db, company) {
+    Err(e) => Err(e),
+    Ok(None) => Err("treasury missing"),
+    Ok(Some(t)) => match assert_eq("balance untouched after refusal", t.balance_cents, want_balance) {
+      Err(e) => Err(e),
+      Ok(_) => assert_eq("committed untouched after refusal", t.committed_cents, want_committed),
+    },
+  }
+}
+
 fn run_all() -> [sql, fs_write, time] Result[Unit, Str] {
   if not test_available_cents() {
     Err("test_available_cents failed")
@@ -245,7 +378,19 @@ fn run_all() -> [sql, fs_write, time] Result[Unit, Str] {
             Err(e) => Err(e),
             Ok(_) => match test_settle_partial_and_overpay(db, log) {
               Err(e) => Err(e),
-              Ok(_) => test_error_paths(db, log),
+              Ok(_) => match test_error_paths(db, log) {
+                Err(e) => Err(e),
+                Ok(_) => match test_supplier_is_credited(db, log) {
+                  Err(e) => Err(e),
+                  Ok(_) => match test_partial_credits_only_paid(db, log) {
+                    Err(e) => Err(e),
+                    Ok(_) => match test_self_contract_nets_to_zero(db, log) {
+                      Err(e) => Err(e),
+                      Ok(_) => test_unpayable_supplier_refused(db, log),
+                    },
+                  },
+                },
+              },
             },
           },
         }
