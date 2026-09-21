@@ -26,8 +26,8 @@ fn find_evidence(evidence :: List[EvidenceItem], attr :: Str) -> Option[Evidence
 fn evaluate(criteria :: List[request_bid.Criterion], evidence :: List[EvidenceItem]) -> contract.Verdict
   examples {
     evaluate([], []) => contract.Fulfilled,
-    evaluate([{ attr: "license", description: "must be licensed" }, { attr: "insurance", description: "must be insured" }], []) => contract.Ambiguous(["license", "insurance"]),
-    evaluate([{ attr: "license", description: "must be licensed" }, { attr: "insurance", description: "must be insured" }], [{ attr: "license", satisfied: false, note: "missing" }]) => contract.Ambiguous(["insurance"]),
+    evaluate([{ attr: "license", description: "must be licensed" }, { attr: "insurance", description: "must be insured" }], []) => contract.Unassessed(["license", "insurance"]),
+    evaluate([{ attr: "license", description: "must be licensed" }, { attr: "insurance", description: "must be insured" }], [{ attr: "license", satisfied: false, note: "missing" }]) => contract.Unassessed(["insurance"]),
     evaluate([{ attr: "license", description: "must be licensed" }, { attr: "insurance", description: "must be insured" }], [{ attr: "license", satisfied: true, note: "valid" }, { attr: "insurance", satisfied: true, note: "valid" }]) => contract.Fulfilled,
     evaluate([{ attr: "license", description: "must be licensed" }, { attr: "insurance", description: "must be insured" }], [{ attr: "license", satisfied: false, note: "missing" }, { attr: "insurance", satisfied: false, note: "missing" }]) => contract.Rejected(["license", "insurance"]),
     evaluate([{ attr: "license", description: "must be licensed" }, { attr: "insurance", description: "must be insured" }, { attr: "bond", description: "must be bonded" }], [{ attr: "license", satisfied: true, note: "valid" }, { attr: "insurance", satisfied: false, note: "expired" }, { attr: "bond", satisfied: true, note: "valid" }]) => contract.PartiallyFulfilled(["insurance"])
@@ -65,7 +65,7 @@ fn decide_verdict(unassessed :: List[Str], met :: List[Str], unmet :: List[Str])
         }
       }
     } else {
-      contract.Ambiguous(unassessed)
+      contract.Unassessed(unassessed)
     }
   }
 }
