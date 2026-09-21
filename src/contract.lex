@@ -1,6 +1,6 @@
 type Money = { cents :: Int, currency :: Str }
 
-type Verdict = Fulfilled | PartiallyFulfilled(List[Str]) | Rejected(List[Str]) | Ambiguous(List[Str])
+type Verdict = Fulfilled | PartiallyFulfilled(List[Str]) | Rejected(List[Str]) | Unassessed(List[Str])
 
 type ContractState = Awarded | InProgress | Delivered | Verified(Verdict) | Settled | Disputed | Cancelled
 

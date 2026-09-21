@@ -44,7 +44,7 @@ fn settle_contract(db :: Db, log :: tlog.Log, c :: contract.Contract, commitment
           },
         }
       },
-      Ambiguous(_) => Err("ambiguous_verdict_needs_arbitration"),
+      Unassessed(_) => Err("ambiguous_verdict_needs_arbitration"),
     },
     _ => Err("not_verified"),
   }
